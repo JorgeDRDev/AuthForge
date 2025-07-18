@@ -17,7 +17,9 @@ class BaseConfig:
     RATELIMIT_ENABLED = True
 
     # Flask settings
-    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+    SECRET_KEY = os.getenv('SECRET_KEY')
+    if not SECRET_KEY:
+        raise ValueError("SECRET_KEY environment variable is required")
     
     # Database settings
     SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///authforge.db')
@@ -25,11 +27,18 @@ class BaseConfig:
     SQLALCHEMY_RECORD_QUERIES = True
     
     # JWT settings
-    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'jwt-secret-key-change-in-production')
+    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY')
+    if not JWT_SECRET_KEY:
+        raise ValueError("JWT_SECRET_KEY environment variable is required")
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(seconds=int(os.getenv('JWT_ACCESS_TOKEN_EXPIRES', 3600)))
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(seconds=int(os.getenv('JWT_REFRESH_TOKEN_EXPIRES', 2592000)))
     JWT_BLACKLIST_ENABLED = True
     JWT_BLACKLIST_TOKEN_CHECKS = ['access', 'refresh']
+    
+    # Security headers
+    JWT_COOKIE_SECURE = True  # HTTPS only cookies
+    JWT_COOKIE_CSRF_PROTECT = True
+    JWT_COOKIE_SAMESITE = 'Strict'
     
     # Redis settings for token blacklisting
     REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
@@ -40,6 +49,10 @@ class BaseConfig:
     # Rate limiting
     RATELIMIT_STORAGE_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
     RATELIMIT_DEFAULT = os.getenv('API_RATE_LIMIT', '100 per minute')
+    
+    # Authentication rate limits
+    LOGIN_RATE_LIMIT = os.getenv('LOGIN_RATE_LIMIT', '5 per minute')
+    REGISTER_RATE_LIMIT = os.getenv('REGISTER_RATE_LIMIT', '3 per minute')
     
     # Argon2 settings
     ARGON2_TIME_COST = int(os.getenv('ARGON2_TIME_COST', 2))
@@ -62,6 +75,14 @@ class DevelopmentConfig(BaseConfig):
     
     DEBUG = True
     TESTING = False
+    
+    # Override base config to allow fallback secrets in development
+    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'jwt-secret-key-change-in-production')
+    
+    # Relaxed security for development
+    JWT_COOKIE_SECURE = False  # Allow HTTP in development
+    JWT_COOKIE_CSRF_PROTECT = False  # Disable CSRF protection in development
     
     # More verbose logging in development
     LOG_LEVEL = 'DEBUG'

@@ -10,12 +10,19 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from config.config import get_config
 
 # Initialize extensions
 db = SQLAlchemy()
 migrate = Migrate()
 jwt = JWTManager()
+limiter = Limiter(
+    app=None,
+    key_func=get_remote_address,
+    default_limits=[]
+)
 redis_client = None
 
 
@@ -34,6 +41,11 @@ def create_app(config_name=None):
     db.init_app(app)
     migrate.init_app(app, db)
     jwt.init_app(app)
+    
+    # Initialize rate limiter
+    if app.config.get('RATELIMIT_ENABLED', True):
+        limiter.init_app(app)
+        limiter.storage_uri = app.config.get('RATELIMIT_STORAGE_URL')
     
     # Initialize Redis for token blacklisting
     global redis_client
@@ -144,13 +156,9 @@ def configure_jwt(app):
 def register_blueprints(app):
     """Register all application blueprints."""
     from app.routes.auth import auth_bp
-    from app.routes.users import users_bp
-    from app.routes.admin import admin_bp
     
     # Register blueprints with URL prefixes
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
-    app.register_blueprint(users_bp, url_prefix='/api/users')
-    app.register_blueprint(admin_bp, url_prefix='/api/admin')
     
     # Health check endpoint
     @app.route('/health')

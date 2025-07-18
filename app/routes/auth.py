@@ -11,9 +11,10 @@ from flask_jwt_extended import (
 from marshmallow import Schema, fields, ValidationError, validates_schema
 from marshmallow.validate import Length, Regexp
 from datetime import datetime, timezone
-from app import db, get_redis_client
+from app import db, get_redis_client, limiter
 from app.models.user import User, Role
 from app.models.token_blacklist import TokenBlacklist, RedisTokenBlacklist
+from app.utils.auth_logger import auth_logger
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -78,6 +79,7 @@ class ChangePasswordSchema(Schema):
 
 
 @auth_bp.route('/register', methods=['POST'])
+@limiter.limit(lambda: current_app.config.get('REGISTER_RATE_LIMIT', '3 per minute'))
 def register():
     """Register a new user account."""
     try:
@@ -119,6 +121,9 @@ def register():
         access_token = create_access_token(identity=user, fresh=True)
         refresh_token = create_refresh_token(identity=user)
         
+        # Log successful registration
+        auth_logger.log_registration(user.id, user.email)
+        
         return jsonify({
             'message': 'User registered successfully',
             'user': user.to_dict(),
@@ -146,6 +151,7 @@ def register():
 
 
 @auth_bp.route('/login', methods=['POST'])
+@limiter.limit(lambda: current_app.config.get('LOGIN_RATE_LIMIT', '5 per minute'))
 def login():
     """Authenticate user and return JWT tokens."""
     try:
@@ -161,6 +167,7 @@ def login():
         # Find user by email
         user = User.query.filter_by(email=data['email']).first()
         if not user:
+            auth_logger.log_failed_login(data['email'], 'User not found')
             return jsonify({
                 'message': 'User not registered',
                 'error': 'invalid_credentials'
@@ -168,6 +175,7 @@ def login():
         
         # Check if account is locked
         if user.is_account_locked():
+            auth_logger.log_failed_login(data['email'], 'Account locked')
             return jsonify({
                 'message': 'Account is temporarily locked due to failed login attempts',
                 'error': 'account_locked'
@@ -175,6 +183,7 @@ def login():
         
         # Check if account is active
         if not user.is_active:
+            auth_logger.log_failed_login(data['email'], 'Account inactive')
             return jsonify({
                 'message': 'Account is deactivated',
                 'error': 'account_inactive'
@@ -184,6 +193,13 @@ def login():
         if not user.check_password(data['password']):
             # Increment failed attempts 
             user.increment_failed_attempts()
+            
+            # Log account lockout if this increment causes lockout
+            if user.failed_login_attempts >= 5:
+                auth_logger.log_account_lockout(user.id, user.email, user.failed_login_attempts)
+            else:
+                auth_logger.log_failed_login(data['email'], 'Invalid password')
+            
             db.session.commit()
             return jsonify({
                 'message': 'Invalid email or password',
@@ -197,6 +213,9 @@ def login():
         # Create access and refresh tokens
         access_token = create_access_token(identity=user, fresh=True)
         refresh_token = create_refresh_token(identity=user)
+        
+        # Log successful login
+        auth_logger.log_successful_login(user.id, user.email)
         
         return jsonify({
             'message': 'Login successful',
@@ -235,6 +254,10 @@ def refresh():
     
         # Create new access token (not fresh)
         access_token = create_access_token(identity=user, fresh=False)
+        
+        # Log token refresh
+        auth_logger.log_token_refresh(user.id, user.email)
+        
         return jsonify({
             'message': 'Token refreshed successfully',
             'access_token': access_token
@@ -267,6 +290,11 @@ def logout():
         else:
             TokenBlacklist.blacklist_token(jti, token_type, user_id, expires_at, "User logout")
         
+        # Log logout
+        user = User.query.get(user_id)
+        if user:
+            auth_logger.log_logout(user.id, user.email, 'single')
+        
         return jsonify({
             'message': 'Logged out successfully'
         }), 200
@@ -291,6 +319,11 @@ def logout_all():
             revoked_count = blacklist.revoke_all_user_tokens(user_id, "Logout all devices")
         else:
             revoked_count = TokenBlacklist.revoke_all_user_tokens(user_id, "Logout all devices")
+        
+        # Log logout all
+        user = User.query.get(user_id)
+        if user:
+            auth_logger.log_logout(user.id, user.email, 'all')
         
         return jsonify({
             'message': 'Logged out from all devices successfully',
@@ -370,6 +403,10 @@ def change_password():
         # Update password
         current_user.set_password(new_password)
         db.session.commit()
+        
+        # Log password change
+        auth_logger.log_password_change(current_user.id, current_user.email)
+        
         return jsonify({
             'message': 'Password changed successfully'
         }), 200
